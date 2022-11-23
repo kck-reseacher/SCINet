@@ -1,6 +1,6 @@
 # SCINet
-Sample Convolution and Interaction Networks
-
+Sample Convolution and Interaction Networks  
+papers: https://arxiv.org/pdf/2106.09305v3.pdf
 
 # Requirements
 tensorflow=2.6.2  
