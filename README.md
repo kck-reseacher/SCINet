@@ -37,4 +37,4 @@ $ python predict.py -d /home/kck/home/train_data -m analyzer
 # predict result
 ## BTC-USD Close feature
 
-![](C:\Users\cksty\PycharmProjects\SCINet\predict_result\BTC-USD_Close.png)
+![](./predict_result/BTC-USD_Close.png)
