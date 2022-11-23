@@ -1,0 +1,15 @@
+{
+    "module": "analyzer",
+    "features": ["Close"],
+    "model_parameter": {
+        "level": 2,
+        "stack": 3,
+        "lag_length": 32,
+        "horizon": 1,
+        "learning_rate": 0.009,
+        "h": 4,
+        "kernel_size": 5,
+        "batch_size": 8,
+        "epochs": 50
+    }
+}
