@@ -7,10 +7,8 @@ import time
 from sklearn.preprocessing import RobustScaler
 from gtda.time_series import SlidingWindow
 from tensorflow.python.keras.callbacks import EarlyStopping
-from tensorflow.keras.losses import MSE, MAE
 from pathlib import Path
-from timelogger import TimeLogger
-from algorithms.common.data_preprocessing import DataPreprocessing
+from Util import TimeLogger
 
 
 class InnerConv1DBlock(tf.keras.layers.Layer):
@@ -54,7 +52,7 @@ class SCIBlock(tf.keras.layers.Layer):
         self.h = h
 
         self.conv1ds = {k: InnerConv1DBlock(filters=self.features, h=self.h, kernel_size=self.kernel_size, name=k)
-                        for k in ['psi', 'phi', 'eta', 'rho']}  # regularize?
+                        for k in ['psi', 'phi', 'eta', 'rho']}
 
     def call(self, inputs):
         F_odd, F_even = inputs[:, ::2], inputs[:, 1::2]
@@ -140,8 +138,7 @@ class SCINet(tf.keras.layers.Layer):
         super().build(input_shape)
 
     def call(self, inputs, training=None):
-        # cascade input down a binary tree of sci-blocks
-        lvl_inputs = [inputs]  # inputs for current level of the tree
+        lvl_inputs = [inputs]
         for i in range(self.levels):
             i_end = 2 ** (i + 1) - 1
             i_start = i_end - 2 ** i
@@ -151,11 +148,8 @@ class SCINet(tf.keras.layers.Layer):
 
         x = self.interleave(lvl_outputs)
         x += inputs
-        x = tf.ensure_shape(x, [None, inputs.shape[1], inputs.shape[2]])  # 추가..
+        x = tf.ensure_shape(x, [None, inputs.shape[1], inputs.shape[2]])
 
-        # not sure if this is the correct way of doing it. The paper merely said to use a fully connected layer to
-        # produce an output. Can't use TimeDistributed wrapper. It would force the layer's timestamps to match that of
-        # the input -- something SCINet is supposed to solve
         x = self.flatten(x)
         ## using only serving
         if training and not self.train_mode:
@@ -173,33 +167,6 @@ class SCINet(tf.keras.layers.Layer):
 
 
 class StackedSCINet(tf.keras.layers.Layer):
-    """Layer that implements StackedSCINet as described in the paper.
-    When called, outputs a tensor of shape (K, -1, n_steps, n_features) containing the outputs of all K internal
-    SCINets (e.g., output[k-1] is the output of the kth SCINet, where k is in [1, ..., K]).
-    To use intermediate supervision, pass the layer's output to StackedSCINetLoss as a separate model output.
-    """
-
-    '''
-    def __init__(self, horizon: int, features: int, stacks: int, levels: int, h: int, kernel_size: int,
-                 kernel_regularizer=None, activity_regularizer=None, name='stacked_scinet', **kwargs):
-        """
-        :param horizon: number of time stamps in output
-        :param stacks: number of stacked SCINets
-        :param levels: number of levels for each SCINet
-        :param h: scaling factor for convolutional module in each SCIBlock
-        :param kernel_size: kernel size of convolutional module in each SCIBlock
-        :param kernel_regularizer: kernel regularizer for each SCINet
-        :param activity_regularizer: activity regularizer for each SCINet
-        """
-        if stacks < 2:
-            raise ValueError('Must have at least 2 stacks')
-
-        super().__init__(name=name, **kwargs)
-        self.stacks = stacks
-        self.scinets = [SCINet(horizon=horizon, features=features, levels=levels, h=h,
-                               kernel_size=kernel_size, kernel_regularizer=kernel_regularizer,
-                               activity_regularizer=activity_regularizer) for _ in range(stacks)]
-    '''
 
     def __init__(self, horizon=2, features=1, stacks=3, levels=3, h=4, kernel_size=5,
                  kernel_regularizer=tf.keras.regularizers.L1L2(0.1, 0.1), activity_regularizer=None, train_mode=False,
@@ -236,17 +203,12 @@ class StackedSCINet(tf.keras.layers.Layer):
         outputs = []
         for scinet in self.scinets:
             x = scinet(inputs)
-            outputs.append(x)  # keep each stack's output for intermediate supervision
-            inputs = tf.concat([x, inputs[:, x.shape[1]:, :]], axis=1)  # X_hat_k concat X_(t-(T-tilda)+1:t)
+            outputs.append(x)
+            inputs = tf.concat([x, inputs[:, x.shape[1]:, :]], axis=1)
         return tf.stack(outputs)
 
 
 class Identity(tf.keras.layers.Layer):
-    """Identity layer used solely for the purpose of naming model outputs and properly displaying outputs when plotting
-    some multi-output models.
-    Returns input without changing them.
-    """
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
@@ -255,10 +217,6 @@ class Identity(tf.keras.layers.Layer):
 
 
 class StackedSCINetLoss(tf.keras.losses.Loss):
-    """Compute loss for a Stacked SCINet via intermediate supervision.
-    `loss = sum of mean normalised difference between each stack's output and ground truth`
-    `y_pred` should be the output of a StackedSCINet layer.
-    """
 
     def __init__(self, name='stacked_scienet_loss', **kwargs):
         super().__init__(name=name, **kwargs)
@@ -270,27 +228,34 @@ class StackedSCINetLoss(tf.keras.losses.Loss):
         loss = tf.linalg.normalize(errors, axis=3)[1]
         loss = tf.reduce_sum(loss, 2)
         loss /= horizon
-        loss = tf.reduce_sum(tf.clip_by_value(loss, 1e-10, 1.0))
+        loss = tf.reduce_sum(tf.clip_by_value(loss, 1e-10, 1.0)) # prevent loss NaN
 
         return loss
 
 
 class SCI:
-    def __init__(self, id, config, logger):
+    def __init__(self, config, logger):
         self.config = config
         self.logger = logger
 
-        self.model_id = f"SCI_{id}"
+        self.model_id = f"SCI"
         self.model_desc = 'sci'
         self.scaler_dict = dict()
         self.models = dict()
 
-        self.features = None
-        self.init_param(config)
+        self.features = self.config["features"]
 
         # SCINet model structure parameter
-        self.level = 2
-        self.Stack = 3
+        parameter = self.config["model_parameter"]
+        self.level = parameter["level"]
+        self.Stack = parameter["stack"]
+        self.lag_length = parameter["lag_length"]
+        self.horizon = parameter["horizon"]
+        self.learning_rate = parameter["learning_rate"]
+        self.h = parameter["h"]
+        self.kernel_size = parameter["kernel_size"]
+        self.batch_size = parameter["batch_size"]
+        self.epochs = parameter["epochs"]
 
     def make_simple_stacked_scinet(self, input_shape, horizon: int, K: int, L: int, h: int, kernel_size: int,
                                    learning_rate: float, kernel_regularizer=None, activity_regularizer=None,
@@ -319,44 +284,15 @@ class SCI:
 
         return model
 
-    def make_simple_scinet(self, input_shape, horizon: int, L: int, h: int, kernel_size: int, learning_rate: float,
-                           kernel_regularizer=None, activity_regularizer=None, diagram_path=None):
-        """Compiles a simple SCINet and saves model diagram if given a path.
-        Intended to be a demonstration of simple model construction. See paper for details on the hyperparameters.
-        """
-        model = tf.keras.Sequential([
-            tf.keras.Input(shape=(input_shape[1], input_shape[2]), name='inputs'),
-            SCINet(horizon, features=input_shape[-1], levels=L, h=h, kernel_size=kernel_size,
-                   kernel_regularizer=kernel_regularizer, activity_regularizer=activity_regularizer)
-        ])
-
-        model.summary()
-        if diagram_path:
-            tf.keras.utils.plot_model(model, to_file=diagram_path, show_shapes=True)
-        model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
-                      loss='mse',  # mse
-                      metrics=['mse', 'mae']
-                      )
-
-        return model
-
-    def train_data_preprocessing(self, train_df):
-        train_df.index = pd.to_datetime(train_df.index, format="%Y-%m-%d %H:%M:%S")
-        train_df["minute"] = train_df.index.map(lambda x: int((x.hour * 60 + x.minute) / 1))
-        train_df["weekday"] = train_df.index.map(lambda x: x.weekday())
-        train_df["yymmdd"] = train_df.index.map(lambda x: x.strftime("%Y-%m-%d"))
-
-        return train_df
-
-    def fit(self, df, biz_dict, train_progress=None):
+    def fit(self, df):
         fit_start = time.time()
         df = df[~df.index.duplicated()]
-        df = self.train_data_preprocessing(df)
 
-        train_df = df.copy()
-        train_cutoff = int(len(train_df) * 0.7)
-        train_data, val_data = train_df[:train_cutoff], train_df[
-                                                        train_cutoff:]  # df[train_cutoff:val_cutoff], df[val_cutoff:]
+        train_cutoff, val_cutoff = int(len(df) * 0.6), int(len(df) * 0.8)
+        train_data, val_data, test_data = df[:train_cutoff], df[train_cutoff:val_cutoff], df[val_cutoff:]
+
+        predict_data_dir = self.config["train_dir"] + "/" + "predict_data.csv"
+        test_data.to_csv(predict_data_dir)
 
         for feat in self.features:
             self.logger.info(f"SCI fit start feat : {feat}")
@@ -367,38 +303,32 @@ class SCI:
             scaled_train_data = scaler.fit_transform(feat_train_data)
             scaled_val_data = scaler.transform(feat_val_data)
 
-            lag_length, horizon = 32, 1  # lag_length is multiple of eight
-            learning_rate = 0.009
-            h, kernel_size, L, K = 4, 5, self.level, self.Stack
-
             # select to prevent overfitting
             kernel_regularizer = tf.keras.regularizers.L1L2(0.1, 0.1)
 
-            windows = SlidingWindow(size=lag_length + horizon, stride=1)
+            windows = SlidingWindow(size=self.lag_length + self.horizon, stride=1)
             window_train_data = windows.fit_transform(scaled_train_data)
-            windows = SlidingWindow(size=lag_length + horizon, stride=lag_length + horizon)
+            windows = SlidingWindow(size=self.lag_length + self.horizon, stride=self.lag_length + self.horizon)
             window_val_data = windows.fit_transform(scaled_val_data)
 
-            # Split all time series segments into x and y
-            X_train, Y_train = window_train_data[:, :-horizon, :], window_train_data[:, -horizon:, :]
-            X_val, Y_val = window_val_data[:, :-horizon, :], window_val_data[:, -horizon:, :]
+            X_train, Y_train = window_train_data[:, :-self.horizon, :], window_train_data[:, -self.horizon:, :]
+            X_val, Y_val = window_val_data[:, :-self.horizon, :], window_val_data[:, -self.horizon:, :]
 
-            model = self.make_simple_stacked_scinet(X_train.shape, horizon=horizon, K=K, L=L, h=h,
-                                                    kernel_size=kernel_size,
-                                                    learning_rate=learning_rate, kernel_regularizer=None,
+            model = self.make_simple_stacked_scinet(X_train.shape, horizon=self.horizon, K=self.Stack, L=self.level, h=self.h,
+                                                    kernel_size=self.kernel_size,
+                                                    learning_rate=self.learning_rate, kernel_regularizer=None,
                                                     diagram_path=None, train_mode=True)
 
             # select to prevent overfitting
             early_stopping = EarlyStopping(monitor='val_loss', patience=5, min_delta=0, verbose=1,
-                                           restore_best_weights=True)  # patience=5
+                                           restore_best_weights=True)
 
             history = model.fit(X_train,
                                 Y_train,
                                 validation_data=(X_val, Y_val),
-                                batch_size=16,
-                                epochs=30,
-                                )
-            # callbacks=[early_stopping]) # callbacks=[early_stopping, tensorboard_callback]
+                                batch_size=self.batch_size,
+                                epochs=self.epochs,
+                                callbacks=[early_stopping])
 
             self.models[feat] = model
             self.scaler_dict[feat] = scaler
@@ -406,45 +336,23 @@ class SCI:
         train_time = int(time.time() - fit_start)
 
         train_result = {
-            "from_date": self.config["date"][0],
-            "to_date": self.config["date"][-1],
-            "except_failure_date_list": None,
-            "except_business_list": None,
-            "business_list": None,
-            "train_business_status": None,
-            "train_mode": None,
-            "outlier_mode": None,
-            "results": {
-                "mse": -1,
-                "rmse": -1,
-                "duration_time": train_time,
-                "hyper_params": None,
-            },
-            "train_metrics": None,
+            "duration_time": train_time,
+            "hyper_params": self.config["model_parameter"],
         }
 
         self.logger.info(f"[SCI] model training finish !!")
 
-        return train_result, None, 0, None
+        return train_result
 
-    def make_serving_data(self, input_df):
-        input_df["tstmp"] = pd.to_datetime(input_df.time, format="%Y-%m-%d %H:%M:%S")
-        input_df["dmin"] = input_df.tstmp.map(
-            lambda x: int((x.hour * 60 + x.minute) / 1)
-        )
-        input_df["wday"] = input_df.tstmp.map(lambda x: x.weekday())
-
-        return input_df
-
-    def predict(self, input_df, sbiz_df):
+    def predict(self):
         with TimeLogger("[SCI] Serving elapsed time :", self.logger):
 
             result_df = pd.DataFrame([])
-            serv_df = pd.read_csv("./20220928.csv")
+            predict_data_dir = self.config["train_dir"] + "/" + "predict_data.csv"
+            serv_df = pd.read_csv(predict_data_dir, index_col=0)
             serv_window = 60
             for i in range(len(serv_df) - serv_window):
                 input_df = serv_df.iloc[i:serv_window + i].copy()
-                input_df = self.make_serving_data(input_df)
                 input_df = input_df.reset_index()
                 pred_dict = dict()
                 window_size = 32
@@ -464,7 +372,7 @@ class SCI:
                     pred_dict[feat] = y_mean
                     pred_dict[f"{feat}_std"] = y_std
 
-                pred_df = pd.DataFrame(pred_dict, index=[input_df.iloc[-1]['time']])
+                pred_df = pd.DataFrame(pred_dict, index=[input_df.iloc[-1]['Date']])
                 # make prediction intervals
                 for feat in self.features:
                     pred_df[f"{feat}_lower"] = pred_df[feat] - 1.5 * pred_df[f"{feat}_std"]
@@ -472,9 +380,10 @@ class SCI:
                 pred_df[pred_df < 0] = 0
                 pred_df = pred_df.drop([f"{feat}_std"], axis=1)
                 result_df = result_df.append(pred_df)
+                self.logger.info(f"result_df : {result_df}")
 
         result_df[result_df < 0] = 0
-        result_df.to_csv(f"./sci_result_df_{self.level}_{self.Stack}.csv")
+        result_df.to_csv(f"./sci_result_df_BTCUSD_{self.level}_{self.Stack}.csv")
 
         return result_df
 
