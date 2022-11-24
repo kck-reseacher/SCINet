@@ -75,7 +75,7 @@ if py_path is None:
 
 # argv
 if len(sys.argv) < 3:
-    aicommon.Utils.usage()
+    common.usage()
     sys.exit(2)
 
 try:
@@ -86,7 +86,7 @@ try:
     )
 except getopt.GetoptError as err:
     print(err)
-    aicommon.Utils.usage()
+    common.usage()
     sys.exit(2)
 
 GPU = None
@@ -164,7 +164,6 @@ try:
 
 except MemoryError as error:
     logger.exception("Occur Memory error in training process.", error)
-    aicommon.Utils.print_memory_usage(logger)
 
 except Exception as e:
 

@@ -101,3 +101,9 @@ class common:
         components = snake_str.split("_")
         return "".join(x.title() for x in components[0:])
 
+    @staticmethod
+    def usage():
+        print("usage: command [OPTIONS] [MODULE]")
+        print("    -m, --module   module name")
+        print("    -d, --datapath   train data directory")
+        print("    -g, --gpu   gpu number")
